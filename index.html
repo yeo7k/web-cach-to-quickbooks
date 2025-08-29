@@ -163,6 +163,25 @@
             font-weight: 500;
         }
 
+        .data-table .error-row {
+            background: #ffe6e6;
+            border: 2px solid #ff4444;
+        }
+
+        .data-table .error-cell {
+            color: #cc0000;
+            font-weight: bold;
+        }
+
+        .error-badge {
+            background: #ff4444;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+
         .status {
             padding: 15px;
             border-radius: 6px;
@@ -235,9 +254,24 @@
                 <li>Right-click the report and select <strong>Save As</strong></li>
                 <li>Select <strong>"Webpage, Single File"</strong> as Format</li>
                 <li>Save it in a directory that should have all the reports downloaded</li>
+                <li>Upload the file here</li>
+                <li>Click on <strong>Export to CSV</strong></li>
+                <li>The exported file should be in the <strong>Downloads</strong> folder</li>
             </ol>
             <p style="color: #cc0000; font-size: 13px; margin-top: 12px; font-weight: 600;">
                 ⚠️ Important: Keep track of the reports you have already imported to avoid duplicates
+            </p>
+        </div>
+        
+        <div style="margin-bottom: 20px;">
+            <label for="accountType" style="display: block; margin-bottom: 8px; font-weight: 600; color: #333;">Account Type:</label>
+            <select id="accountType" style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 16px; background: white;">
+                <option value="Operacional">Operacional</option>
+                <option value="Derrama">Derrama</option>
+            </select>
+            <p style="color: #666; font-size: 13px; margin-top: 8px;">
+                • <strong>Derrama:</strong> Only exports rows where Description starts with "D"<br>
+                • <strong>Operacional:</strong> Only exports rows where Description does NOT start with "D"
             </p>
         </div>
         
@@ -258,7 +292,7 @@
         
         <div class="preview-section" id="previewSection">
             <div class="preview-header">
-                <div class="preview-title">Extracted Data Preview</div>
+                <div class="preview-title">Valid Records (Will be exported)</div>
                 <div class="row-count" id="rowCount">0 rows</div>
             </div>
             <div style="overflow-x: auto;">
@@ -277,6 +311,34 @@
             </div>
         </div>
         
+        <div class="preview-section" id="invalidSection" style="display: none;">
+            <div style="background: #fff3cd; border: 2px solid #ffc107; border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+                <div style="color: #856404; font-weight: bold; margin-bottom: 8px;">⚠️ Records with Invalid Format</div>
+                <div style="color: #856404; font-size: 14px;">
+                    These records have invalid Description format (expected: #### or D####).<br>
+                    They will NOT be exported and must be processed manually.
+                </div>
+            </div>
+            <div class="preview-header">
+                <div class="preview-title" style="color: #cc0000;">Invalid Records (NOT exported)</div>
+                <div class="row-count" id="invalidRowCount" style="background: #ff4444;">0 rows</div>
+            </div>
+            <div style="overflow-x: auto;">
+                <table class="data-table" id="invalidDataTable">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Reference</th>
+                            <th>Customer Name</th>
+                            <th>Account Number (Invalid)</th>
+                            <th class="amount">Amount</th>
+                        </tr>
+                    </thead>
+                    <tbody id="invalidTableBody"></tbody>
+                </table>
+            </div>
+        </div>
+        
         <button class="button" id="exportButton">Export to CSV</button>
         
         <div class="export-info" id="exportInfo"></div>
@@ -284,6 +346,8 @@
 
     <script>
         let extractedData = [];
+        let filteredData = [];
+        let invalidData = [];
 
         const uploadArea = document.getElementById('uploadArea');
         const fileInput = document.getElementById('fileInput');
@@ -294,6 +358,10 @@
         const rowCount = document.getElementById('rowCount');
         const exportButton = document.getElementById('exportButton');
         const exportInfo = document.getElementById('exportInfo');
+        const accountTypeSelect = document.getElementById('accountType');
+        const invalidSection = document.getElementById('invalidSection');
+        const invalidTableBody = document.getElementById('invalidTableBody');
+        const invalidRowCount = document.getElementById('invalidRowCount');
 
         uploadArea.addEventListener('click', () => fileInput.click());
 
@@ -319,6 +387,8 @@
         fileInput.addEventListener('change', (e) => {
             if (e.target.files.length > 0) {
                 handleFile(e.target.files[0]);
+                // Reset the input value to allow re-uploading the same file
+                fileInput.value = '';
             }
         });
 
@@ -331,9 +401,20 @@
                 return;
             }
 
+            // Reset all data arrays
+            extractedData = [];
+            filteredData = [];
+            invalidData = [];
+            
+            // Clear table bodies
+            tableBody.innerHTML = '';
+            invalidTableBody.innerHTML = '';
+            
+            // Hide all sections and reset displays
             loading.style.display = 'block';
             status.style.display = 'none';
             previewSection.style.display = 'none';
+            invalidSection.style.display = 'none';
             exportButton.style.display = 'none';
             exportInfo.style.display = 'none';
 
@@ -344,7 +425,7 @@
                     extractedData = parseReport(content);
                     
                     if (extractedData.length > 0) {
-                        displayPreview(extractedData);
+                        applyFilter();
                         showStatus(`Successfully extracted ${extractedData.length} payment records`, 'success');
                         exportButton.style.display = 'inline-block';
                     } else {
@@ -402,11 +483,21 @@
                     if (paymentMatch) {
                         const [, date, reference, customerName, accountNumber, amount] = paymentMatch;
                         
-                        const fullDate = currentDate ? 
-                            currentDate.replace(/(\d{2})\/(\d{2})\/(\d{2})/, (m, month, day, year) => {
-                                return `20${year}-${month}-${date.replace('-', '')}`;
-                            }) : 
-                            `2025-${date.replace('-', '')}`;
+                        // Parse the transaction date (MM-DD format)
+                        const [transMonth, transDay] = date.split('-');
+                        
+                        // Build the full date properly
+                        let fullDate;
+                        if (currentDate) {
+                            // Extract year from currentDate (format: MM/DD/YY)
+                            const yearMatch = currentDate.match(/\d{2}\/\d{2}\/(\d{2})/);
+                            const year = yearMatch ? `20${yearMatch[1]}` : new Date().getFullYear().toString();
+                            fullDate = `${year}-${transMonth}-${transDay}`;
+                        } else {
+                            // Fallback to current year if no currentDate
+                            const currentYear = new Date().getFullYear();
+                            fullDate = `${currentYear}-${transMonth}-${transDay}`;
+                        }
                         
                         data.push({
                             date: fullDate,
@@ -422,13 +513,14 @@
             return data;
         }
 
-        function displayPreview(data) {
+        function displayPreview(validData, invalidDataToShow) {
+            // Clear both tables
             tableBody.innerHTML = '';
+            invalidTableBody.innerHTML = '';
             
-            const maxRows = Math.min(data.length, 10);
-            
-            for (let i = 0; i < maxRows; i++) {
-                const row = data[i];
+            // Display valid records
+            for (let i = 0; i < validData.length; i++) {
+                const row = validData[i];
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     <td>${row.date}</td>
@@ -440,38 +532,84 @@
                 tableBody.appendChild(tr);
             }
             
-            if (data.length > 10) {
-                const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td colspan="5" style="text-align: center; font-style: italic; color: #999;">
-                        ... and ${data.length - 10} more rows
-                    </td>
-                `;
-                tableBody.appendChild(tr);
+            // Display invalid records if any
+            if (invalidDataToShow && invalidDataToShow.length > 0) {
+                for (let i = 0; i < invalidDataToShow.length; i++) {
+                    const row = invalidDataToShow[i];
+                    const tr = document.createElement('tr');
+                    tr.style.background = '#ffe6e6';
+                    tr.innerHTML = `
+                        <td>${row.date}</td>
+                        <td>${row.reference}</td>
+                        <td>${row.customerName}</td>
+                        <td style="color: #cc0000; font-weight: bold;">${row.accountNumber}</td>
+                        <td class="amount">$${parseFloat(row.amount).toFixed(2)}</td>
+                    `;
+                    invalidTableBody.appendChild(tr);
+                }
+                
+                invalidRowCount.textContent = `${invalidDataToShow.length} rows`;
+                invalidSection.style.display = 'block';
+            } else {
+                invalidSection.style.display = 'none';
             }
             
-            rowCount.textContent = `${data.length} rows`;
+            rowCount.textContent = `${validData.length} rows`;
             previewSection.style.display = 'block';
         }
 
+        // Add event listener for account type change
+        accountTypeSelect.addEventListener('change', () => {
+            if (extractedData.length > 0) {
+                applyFilter();
+            }
+        });
+
+        function applyFilter() {
+            const accountType = accountTypeSelect.value;
+            
+            // First, separate valid and invalid records based on pattern
+            const validPattern = /^D?\d{4}$/;
+            const validRecords = extractedData.filter(row => validPattern.test(row.accountNumber));
+            invalidData = extractedData.filter(row => !validPattern.test(row.accountNumber));
+            
+            // Then apply account type filter on valid records only
+            if (accountType === 'Derrama') {
+                // Only include valid rows where Description starts with "D"
+                filteredData = validRecords.filter(row => row.accountNumber.startsWith('D'));
+            } else {
+                // Only include valid rows where Description does NOT start with "D"
+                filteredData = validRecords.filter(row => !row.accountNumber.startsWith('D'));
+            }
+            
+            displayPreview(filteredData, invalidData);
+        }
+
         exportButton.addEventListener('click', () => {
-            if (extractedData.length === 0) {
-                showStatus('No data to export', 'error');
+            if (filteredData.length === 0) {
+                showStatus('No data to export after filtering', 'error');
                 return;
             }
 
+            const accountType = accountTypeSelect.value;
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-            const rowCount = extractedData.length;
-            const filename = `report_${timestamp}_${rowCount}rows.csv`;
+            const rowCount = filteredData.length;
+            const filename = `report_${accountType}_${timestamp}_${rowCount}rows.csv`;
             
-            const csvContent = generateCSV(extractedData);
+            const csvContent = generateCSV(filteredData);
             downloadCSV(csvContent, filename);
+            
+            const invalidWarning = invalidData.length > 0 
+                ? `<br><span style="color: #cc0000; font-weight: bold;">⚠️ ${invalidData.length} invalid records were NOT exported (see table above)</span>`
+                : '';
             
             exportInfo.innerHTML = `
                 <strong>Export Complete!</strong><br>
                 Filename: ${filename}<br>
-                Total Rows: ${rowCount}<br>
+                Account Type: ${accountType}<br>
+                Total Rows Exported: ${rowCount}<br>
                 Timestamp: ${new Date().toLocaleString()}
+                ${invalidWarning}
             `;
             exportInfo.style.display = 'block';
             
@@ -479,7 +617,7 @@
         });
 
         function generateCSV(data) {
-            const headers = ['Date', 'Reference', 'Customer Name', 'Account Number', 'Amount'];
+            const headers = ['Date', 'Check number', 'Customer Name', 'Description', 'Amount'];
             const csvRows = [headers.join(',')];
             
             for (const row of data) {
