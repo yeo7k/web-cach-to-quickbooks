@@ -452,9 +452,16 @@
             
             let inPaymentSection = false;
             let currentDate = '';
+            let reportYear = '';
             
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i].trim();
+                
+                // Extract year from "As of YYYY-MM-DD" pattern
+                const asOfMatch = line.match(/As of (\d{4})-\d{2}-\d{2}/);
+                if (asOfMatch) {
+                    reportYear = asOfMatch[1];
+                }
                 
                 if (line.includes('MERCHANT NAME') && line.includes('DATE')) {
                     const dateMatch = line.match(/DATE\s+(\d{2}\/\d{2}\/\d{2})/);
@@ -486,17 +493,14 @@
                         // Parse the transaction date (MM-DD format)
                         const [transMonth, transDay] = date.split('-');
                         
-                        // Build the full date properly
+                        // Build the full date properly using the year from "As of" section
                         let fullDate;
-                        if (currentDate) {
-                            // Extract year from currentDate (format: MM/DD/YY)
-                            const yearMatch = currentDate.match(/\d{2}\/\d{2}\/(\d{2})/);
-                            const year = yearMatch ? `20${yearMatch[1]}` : new Date().getFullYear().toString();
-                            fullDate = `${year}-${transMonth}-${transDay}`;
+                        if (reportYear) {
+                            // Use the year extracted from "As of YYYY-MM-DD" pattern
+                            fullDate = `${reportYear}-${transMonth}-${transDay}`;
                         } else {
-                            // Fallback to current year if no currentDate
-                            const currentYear = new Date().getFullYear();
-                            fullDate = `${currentYear}-${transMonth}-${transDay}`;
+                            // Throw an error if we can't determine the year
+                            throw new Error('Unable to determine the report year. The report must contain "As of YYYY-MM-DD" format to extract the year.');
                         }
                         
                         data.push({
